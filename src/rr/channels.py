@@ -2,7 +2,6 @@ import bisect
 import contextlib
 import inspect
 import logging
-import weakref
 
 from rr import pretty
 
@@ -140,9 +139,8 @@ class Channel:
     # them). The idea for this cache comes from the `logging` module, specifically from the
     # `logging.getLogger()` function. The reason for this is to allow different modules to use
     # the exact same channel without either of them explicitly importing the channel object from
-    # another module. A `weakref.WeakValueDictionary` is used to allow the channel objects to be
-    # garbage collected when no hard reference to them exists.
-    __instances__ = weakref.WeakValueDictionary()
+    # another module.
+    __instances__ = {}
 
     def __new__(cls, name=""):
         channel = cls.__instances__.get(name)  # try to fetch the channel from cache
@@ -169,6 +167,20 @@ class Channel:
 
     def __info__(self):
         return self.name
+
+    @classmethod
+    def clear_all(cls):
+        """Calls the `clear()` method on all channels cached by `cls`."""
+        for channel in cls.__instances__.values():
+            channel.clear()
+        cls.__instances__.clear()
+
+    def clear(self):
+        """Stop and remove all listeners from the channel."""
+        for listeners in self.listeners.values():
+            for listener in list(listeners):
+                listener.stop()
+        assert len(self.listeners) == 0
 
     def listen(self, callback, type=None, condition=None, priority=0.0, owner=None):
         """Creates and starts a Listener object on this channel. Returns the new Listener."""
@@ -258,11 +270,13 @@ class Listener:
         self.deployed = False  # True iff currently listening
 
     def __info__(self):
+        type = self.type or "*"
+        channel = self.channel.name or "."
         callback = f", cb={self.callback.__name__}"
         condition = "" if self.condition is None else f", c={self.condition.__name__}"
         priority = "" if self.priority == 0.0 else f", p={self.priority!r}"
         owner = "" if self.owner is None else f", o={self.owner!r}"
-        return f"{self.type or '*'}@{self.channel.name}{callback}{condition}{priority}{owner}"
+        return f"{type}@{channel}{callback}{condition}{priority}{owner}"
 
     def __enter__(self):
         if not self.deployed:
@@ -274,16 +288,14 @@ class Listener:
             self.stop()
 
     def start(self):
-        if self.deployed:
-            raise ValueError("listener is already deployed")
-        self.channel._insert(self)
-        self.deployed = True
+        if not self.deployed:
+            self.channel._insert(self)
+            self.deployed = True
 
     def stop(self):
-        if not self.deployed:
-            raise ValueError("listener is not deployed")
-        self.channel._remove(self)
-        self.deployed = False
+        if self.deployed:
+            self.channel._remove(self)
+            self.deployed = False
 
     def _check(self, signal):
         if self.deployed and (self.condition is None or self.condition(signal)):
@@ -306,9 +318,10 @@ class Signal:
         self.owner = owner  # owner object (optional usage, can be anything)
 
     def __info__(self):
+        channel = self.channel.name or "."
         data = "" if self.data is None else f", d={self.data!r}"
         owner = "" if self.owner is None else f", o={self.owner!r}"
-        return f"{self.type}@{self.channel.name}{data}{owner}"
+        return f"{self.type}@{channel}{data}{owner}"
 
     def emit(self):
         with _activating(self):
