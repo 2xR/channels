@@ -125,9 +125,9 @@ class Channel:
 
         root = rr.channels.Channel()
         foo = rr.channels.Channel("foo")
-        with root.listen(show_active_primitives):
+        with root.listen(type=None, callback=show_active_primitives):
             foo.emit("bar")
-            with foo.listen(show_active_primitives, type="bar"):
+            with foo.listen(type="bar", callback=show_active_primitives):
                 foo.emit("spam")
                 foo.emit("bar")
                 foo.emit("ham")
@@ -154,12 +154,14 @@ class Channel:
             return  # skip initialization if this channel was obtained from cache
         self.listeners = {}  # {signal_type: [Listener]}
         self.name = name  # channel name (defines channel hierarchy as in `logging`)
-        self.ancestor_names = []  # names of ancestor channels (bottom up to the root channel)
+        self.ancestor_names = []  # names of ancestor channels (bottom-up to the root channel)
         if name != "":
             # For all channels **except the root channel**, we build a list of the names of all
             # ancestor channels. The root channel is an exception because it is the only channel
             # without any ancestors.
             parts = name.split(".")
+            if any(len(part) == 0 for part in parts):
+                raise ValueError("channel name cannot contain empty components")
             while len(parts) > 0:
                 parts.pop()
                 self.ancestor_names.append(".".join(parts))
