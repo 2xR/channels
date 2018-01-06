@@ -182,14 +182,14 @@ class Channel:
                 listener.stop()
         assert len(self.listeners) == 0
 
-    def listen(self, callback, type=None, condition=None, priority=0.0, owner=None):
+    def listen(self, type, callback, condition=None, priority=0.0, owner=None):
         """Creates and starts a Listener object on this channel. Returns the new Listener."""
         if owner is None:
             owner = _get_caller_name()
         listener = Listener(
             channel=self,
-            callback=callback,
             type=type,
+            callback=callback,
             condition=condition,
             priority=priority,
             owner=owner,
@@ -260,10 +260,10 @@ class Listener:
     channel (when the start() method is called).
     """
 
-    def __init__(self, channel, callback, type=None, condition=None, priority=0.0, owner=None):
+    def __init__(self, channel, type, callback, condition=None, priority=0.0, owner=None):
         self.channel = channel  # channel where the listener is deployed
-        self.callback = callback  # callable executed when the listener is triggered
         self.type = type  # type of signal that triggers the listener
+        self.callback = callback  # callable executed when the listener is triggered
         self.condition = condition  # predicate used to filter matching signals
         self.priority = priority  # listener activation priority (lower goes first)
         self.owner = owner  # owner object (optional usage, can be anything)
