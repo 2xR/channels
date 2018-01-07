@@ -121,7 +121,7 @@ class Channel:
         import rr.channels
 
         def show_active_primitives():
-            print(rr.channels.active_signal(), rr.channels.active_listener())
+            print(rr.channels.active_signal(), "=>", rr.channels.active_listener())
 
         root = rr.channels.Channel()
         foo = rr.channels.Channel("foo")
@@ -143,6 +143,7 @@ class Channel:
     __instances__ = {}
 
     def __new__(cls, name=""):
+        name = str(name)  # force name to be a string
         channel = cls.__instances__.get(name)  # try to fetch the channel from cache
         if channel is None:
             channel = super(Channel, cls).__new__(cls)  # cache miss -> create a new object
@@ -272,7 +273,7 @@ class Listener:
         self.deployed = False  # True iff currently listening
 
     def __info__(self):
-        type = self.type or "*"
+        type = "" if self.type is None else repr(self.type)
         channel = self.channel.name or "."
         callback = f", cb={self.callback.__name__}"
         condition = "" if self.condition is None else f", c={self.condition.__name__}"
@@ -323,7 +324,7 @@ class Signal:
         channel = self.channel.name or "."
         data = "" if self.data is None else f", d={self.data!r}"
         owner = "" if self.owner is None else f", o={self.owner!r}"
-        return f"{self.type}@{channel}{data}{owner}"
+        return f"{self.type!r}@{channel}{data}{owner}"
 
     def emit(self):
         with _activating(self):
