@@ -43,20 +43,23 @@ def _activating(obj):
 
 
 def _get_caller(depth=0):
-    """Get the caller of this this function's caller. The`depth` in the call stack."""
-    frame = inspect.currentframe()
+    """Retrieve the callable running in the frame at the given `depth` relative to the caller of
+    this function's caller (i.e. `depth` + 2 levels in the call stack).
+    """
     try:
+        frame = inspect.currentframe()
         for _ in range(depth+2):
             frame = frame.f_back
         func_name = frame.f_code.co_name
-        return frame.f_globals[func_name]
+        func = frame.f_globals[func_name]
+        return func if callable(func) else None
     except Exception:
         return None
 
 
 def _get_caller_name(depth=0):
-    """Return the name of the caller of this function's caller, or `None` if unable to retrieve
-    the calling function.
+    """Return the qualified name of the callable running in the frame at the given `depth`
+    relative to the caller of this function, or `None` if unable to retrieve the calling function.
     """
     func = _get_caller(depth+1)
     return None if func is None else func.__qualname__
@@ -102,8 +105,8 @@ class PriorityList(list):
 @pretty.klass
 class Channel:
     """This class implements a channel for asynchronous communication using `Signal` and
-    `Listener` primitives. Users should not use the primitive classes directly. Instead,
-    the `listen()` and `emit()` methods should be used.
+    `Listener` primitives. Users should not need to (but may) use the primitive classes directly.
+    Instead, the `.listen()` and `.emit()` methods should be used in most cases.
 
     Channels have a `name` attribute which defines the channel hierarchy, similar to loggers in
     the `logging` standard library module. The root channel's name is the empty string,
@@ -117,7 +120,6 @@ class Channel:
 
     Example usage:
 
-        import contextlib
         import rr.channels
 
         def show_active_primitives():
@@ -143,7 +145,8 @@ class Channel:
     __instances__ = {}
 
     def __new__(cls, name=""):
-        name = str(name)  # force name to be a string
+        if not isinstance(name, str):  # force name to be a string
+            raise TypeError(f"string expected, got {type(name).__name__} instead")
         channel = cls.__instances__.get(name)  # try to fetch the channel from cache
         if channel is None:
             channel = super(Channel, cls).__new__(cls)  # cache miss -> create a new object
@@ -155,17 +158,15 @@ class Channel:
             return  # skip initialization if this channel was obtained from cache
         self.listeners = {}  # {signal_type: [Listener]}
         self.name = name  # channel name (defines channel hierarchy as in `logging`)
-        self.ancestor_names = []  # names of ancestor channels (bottom-up to the root channel)
+        self.bottomup_ancestor_names = []  # names of ancestor channels (bottom-up to the root)
         if name != "":
             # For all channels **except the root channel**, we build a list of the names of all
             # ancestor channels. The root channel is an exception because it is the only channel
             # without any ancestors.
             parts = name.split(".")
-            if any(len(part) == 0 for part in parts):
+            if any(part == "" for part in parts):
                 raise ValueError("channel name cannot contain empty components")
-            while len(parts) > 0:
-                parts.pop()
-                self.ancestor_names.append(".".join(parts))
+            self.bottomup_ancestor_names = [".".join(parts[:-1-i]) for i in range(len(parts))]
         cls.__instances__[name] = self  # store the channel in the class' cache
 
     def __info__(self):
@@ -180,7 +181,7 @@ class Channel:
 
     def clear(self):
         """Stop and remove all listeners from the channel."""
-        for listeners in self.listeners.values():
+        for listeners in list(self.listeners.values()):
             for listener in list(listeners):
                 listener.stop()
         assert len(self.listeners) == 0
@@ -190,27 +191,21 @@ class Channel:
         if owner is None:
             owner = _get_caller_name()
         listener = Listener(
-            channel=self,
             type=type,
             callback=callback,
             condition=condition,
             priority=priority,
             owner=owner,
         )
-        listener.start()
+        listener.listen(channel=self)
         return listener
 
     def emit(self, type, data=None, owner=None):
         """Creates and emits a Signal object on this channel. Returns the new Signal."""
         if owner is None:
             owner = _get_caller_name()
-        signal = Signal(
-            channel=self,
-            type=type,
-            data=data,
-            owner=owner,
-        )
-        signal.emit()
+        signal = Signal(type=type, data=data, owner=owner)
+        signal.emit(channel=self)
         return signal
 
     def _insert(self, listener):
@@ -231,8 +226,8 @@ class Channel:
         """
         self._emit_local(signal)
         cache = type(self).__instances__
-        for name in self.ancestor_names:
-            ancestor = cache.get(name)
+        for ancestor_name in self.bottomup_ancestor_names:
+            ancestor = cache.get(ancestor_name)
             if ancestor is not None:
                 ancestor._emit_local(signal)
 
@@ -245,7 +240,7 @@ class Channel:
             if listeners is None:
                 continue
             for listener in list(listeners):
-                listener._check(signal)
+                listener.check(signal)
 
 
 @pretty.klass
@@ -263,14 +258,13 @@ class Listener:
     channel (when the start() method is called).
     """
 
-    def __init__(self, channel, type, callback, condition=None, priority=0.0, owner=None):
-        self.channel = channel  # channel where the listener is deployed
+    def __init__(self, type, callback, condition=None, priority=0.0, owner=None):
+        self.channel = None  # channel where the listener is deployed
         self.type = type  # type of signal that triggers the listener
         self.callback = callback  # callable executed when the listener is triggered
         self.condition = condition  # predicate used to filter matching signals
         self.priority = priority  # listener activation priority (lower goes first)
         self.owner = owner  # owner object (optional usage, can be anything)
-        self.deployed = False  # True iff currently listening
 
     def __info__(self):
         type = "" if self.type is None else repr(self.type)
@@ -282,26 +276,27 @@ class Listener:
         return f"{type}@{channel}{callback}{condition}{priority}{owner}"
 
     def __enter__(self):
-        if not self.deployed:
-            self.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.deployed:
-            self.stop()
+        self.stop()
 
-    def start(self):
-        if not self.deployed:
+    def listen(self, channel):
+        if self.channel is None:
+            self.channel = channel
             self.channel._insert(self)
-            self.deployed = True
+        elif self.channel is not channel:
+            raise ValueError("listener is already deployed on another channel")
+        return self  # to allow usage as context manager
 
     def stop(self):
-        if self.deployed:
+        if self.channel is not None:
             self.channel._remove(self)
-            self.deployed = False
+            self.channel = None
 
-    def _check(self, signal):
-        if self.deployed and (self.condition is None or self.condition(signal)):
+    def check(self, signal):
+        condition = self.condition
+        if condition is None or condition(signal):
             with _activating(self):
                 self.callback()
 
@@ -312,20 +307,23 @@ class Signal:
     activate listeners, which wait until a signal of matching type is emitted on the same channel.
     """
 
-    def __init__(self, channel, type, data=None, owner=None):
+    def __init__(self, type, data=None, owner=None):
         if type is None:
             raise ValueError("signal type cannot be None")
-        self.channel = channel  # Channel to which the signal is associated
+        self.channel = None  # channel where this signal is being emitted
         self.type = type  # signal type (usually a string)
         self.data = data  # data/payload can be any Python object
         self.owner = owner  # owner object (optional usage, can be anything)
 
     def __info__(self):
-        channel = self.channel.name or "."
+        channel = "" if self.channel is None else f"@{self.channel.name or '.'}"
         data = "" if self.data is None else f", d={self.data!r}"
         owner = "" if self.owner is None else f", o={self.owner!r}"
-        return f"{self.type!r}@{channel}{data}{owner}"
+        return f"{self.type!r}{channel}{data}{owner}"
 
-    def emit(self):
+    def emit(self, channel):
+        prev_channel = self.channel
+        self.channel = channel
         with _activating(self):
             self.channel._emit(self)
+        self.channel = prev_channel
